@@ -2,18 +2,19 @@ package com.aditi.githubreviewbot.ci;
 
 import org.springframework.stereotype.Component;
 
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Comparator;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
 public class CIExecutor {
+
+    private static final String DOCKER_IMAGE = "multi-lang-code-review-analyzer";
+
     public String cloneRepo(String repoUrl, String branch) {
         String dir = System.getProperty("java.io.tmpdir")
                 + File.separator
@@ -32,16 +33,10 @@ public class CIExecutor {
             builder.redirectErrorStream(true);
             Process process = builder.start();
 
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    System.out.println(line);
-                }
-            }
+            streamLogs(process);
 
             int exitCode = process.waitFor();
+
             if (exitCode != 0) {
                 throw new RuntimeException("clone failed with exit code " + exitCode);
             }
@@ -62,12 +57,7 @@ public class CIExecutor {
 
             Process process = builder.start();
 
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-
-                while (reader.readLine() != null) {
-                }
-            }
+            streamLogs(process);
 
             int exitCode = process.waitFor();
             if (exitCode != 0) {
@@ -117,233 +107,121 @@ public class CIExecutor {
                 if (attempts == 0) {
                     hasError.set(true);
                     System.out.println("Failed to delete: " + repoPath + " | " + e.getMessage());
-                } else {
-                    try {
+                }
+
+                try {
                         Thread.sleep(100);
                     } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
-                        return;
                     }
                 }
-            }
         }
     }
 
     public String runCheckStyle(String repoPath) {
-        try {
 
-            File repoDir = new File(repoPath);
+        String command = "cd /workspace && " + "mvn checkstyle:check";
 
-            File mvnwFile = new File(repoDir, "mvnw.cmd");
-
-            ProcessBuilder builder;
-
-            if (mvnwFile.exists()) {
-                builder = new ProcessBuilder("cmd", "/c", "mvnw.cmd", "checkstyle:check");
-                System.out.println("Using Maven wrapper (mvnw.cmd)");
-            } else {
-                builder = new ProcessBuilder("cmd", "/c", "mvn.cmd", "checkstyle:check");
-                System.out.println("Using System Maven (mvn.cmd)");
-            }
-
-            builder.directory(repoDir);
-            builder.redirectErrorStream(true);
-
-            System.out.println("Running command: " + builder.command());
-            System.out.println("Working directory: " + repoDir.getAbsolutePath());
-
-            Process process = builder.start();
-
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                }
-            }
-
-            int exitCode = process.waitFor();
-            System.out.println("====CHECKSTYLE OUTPUT====");
-            System.out.println(output.toString());
-            System.out.println("Checkstyle finished with exit code " + exitCode);
-
-            if (exitCode != 0) {
-                output.append("\n(Checkstyle found issues)");
-            }
-
-            return output.toString();
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new RuntimeException("Checkstyle execution failed: " + e.getMessage(), e);
-        }
+        return runDockerCommand(repoPath, command, "CHECKSTYLE");
     }
 
     public String runSpotBugs(String repoPath) {
-        try {
-            File repoDir = new File(repoPath);
+        String command = "cd /workspace && " + "mvn spotbugs:spotbugs";
 
-            ProcessBuilder builder = new ProcessBuilder(
-                    "cmd", "/c",
-                    "mvn", "spotbugs:spotbugs"
-            );
-
-            builder.directory(repoDir);
-            builder.redirectErrorStream(true);
-
-            System.out.println("Running spotbugs...");
-            System.out.println("Working directory: " + repoDir.getAbsolutePath());
-
-            Process process = builder.start();
-
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                }
-            }
-
-            int exitCode = process.waitFor();
-            System.out.println("Spotbugs finished with exit code " + exitCode);
-
-            if (exitCode != 0) {
-                output.append("\nSpotbugs found issues\n");
-            }
-
-            return output.toString();
-
-        }  catch (Exception e) {
-            e.printStackTrace();
-            throw new RuntimeException("Spotbugs execution failed: " + e.getMessage(), e);
-        }
+        return runDockerCommand(repoPath, command, "SPOTBUGS");
     }
 
     public String runRuff(String repoPath) {
-        try {
-            File repoDir = new File(repoPath);
 
-            ProcessBuilder builder = new ProcessBuilder(
-                    "cmd", "/c",
-                    "ruff",
-                    "check",
-                    ".",
-                    "--output-format",
-                    "json"
-            );
+        String command = "cd /workspace && " + "ruff check . --output-format json";
 
-            builder.directory(repoDir);
-            builder.redirectErrorStream(true);
-
-            System.out.println("Running ruff...");
-            System.out.println("Working directory: " + repoDir.getAbsolutePath());
-
-            Process process = builder.start();
-
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line).append("\n");
-                }
-            }
-
-            int exitCode = process.waitFor();
-            System.out.println("====RUFF OUTPUT====");
-            System.out.println(output.toString());
-            System.out.println("Ruff finished with exit code " + exitCode);
-
-            if (exitCode != 0) {
-                System.out.println("Ruff found issues");
-            }
-
-            return output.toString();
-
-        } catch (Exception e) {
-            e.printStackTrace();
-            throw new RuntimeException("Ruff execution failed: " + e.getMessage(), e);
-        }
+        return runDockerCommand(repoPath, command, "RUFF");
     }
 
     public String runEslint(String repoPath) {
+
+        File configFile = new File(repoPath, "eslint.config.mjs");
+
+        if(!configFile.exists()) {
+            System.out.println("No ESLint config file found. Skipping... " + repoPath);
+            return "[]";
+        }
+
+        String command =
+                "cd /workspace && " +
+                "npm install eslint @eslint/js globals --ignore-scripts && " +
+                "npx eslint . -f json";
+
+        return runDockerCommand(repoPath, command, "ESLINT");
+    }
+
+    private String runDockerCommand(
+            String repoPath,
+            String command,
+            String toolName
+    ) {
         try {
-            File repoDir = new File(repoPath);
 
-            File configFile = new File(repoDir, "eslint.config.mjs");
-            if(!configFile.exists()) {
-                System.out.println("No ESLint config file found. Skipping ESLint execution.");
-                return "[]";
-            }
-
-            System.out.println("Installing ESLint dependencies...");
-            ProcessBuilder installBuilder = new ProcessBuilder(
-                    "cmd", "/c",
-                    "npm", "install", "eslint", "@eslint/js", "globals"
-            );
-
-            installBuilder.directory(repoDir);
-            installBuilder.redirectErrorStream(true);
-
-            Process installProcess = installBuilder.start();
-
-            StringBuilder installOutput = new StringBuilder();
-
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(installProcess.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    installOutput.append(line).append("\n");
-                }
-            }
-
-            int installExitCode = installProcess.waitFor();
-            System.out.println("NPM Install finished with exit code " + installExitCode);
-
-            if (installExitCode != 0) {
-                System.out.println("====NPM INSTALL ERROR====");
-                System.out.println(installOutput.toString());
-            }
+            System.out.println("Running " + toolName + " inside Docker...");
+            System.out.println("Repository path: " + repoPath);
 
             ProcessBuilder builder = new ProcessBuilder(
-              "cmd", "/c",
-                    "npx", "eslint",
-                    ".",
-                    "-f", "json"
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network=none",
+                    "--memory=512m",
+                    "--cpus=1",
+                    "-v",
+                    repoPath.replace("\\", "/") + ":/workspace",
+                    DOCKER_IMAGE,
+                    "bash",
+                    "-c",
+                    command
             );
 
-            builder.directory(repoDir);
             builder.redirectErrorStream(true);
-
-            System.out.println("Running eslint...");
-            System.out.println("Working directory: " + repoDir.getAbsolutePath());
-
             Process process = builder.start();
-
             StringBuilder output = new StringBuilder();
+
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(process.getInputStream()))) {
+
                 String line;
                 while ((line = reader.readLine()) != null) {
                     output.append(line).append("\n");
                 }
             }
 
-            int exitCode = process.waitFor();
-            System.out.println("====ESLINT OUTPUT====");
-            System.out.println(output.toString());
-            System.out.println("ESLINT finished with exit code " + exitCode);
+            boolean finished = process.waitFor(120, TimeUnit.SECONDS);
 
-            if (exitCode != 0) {
-                System.out.println("ESLINT found issues");
+            if (!finished) {
+                process.destroyForcibly();
+                throw new RuntimeException(toolName + " timed out.");
             }
 
+            int exitCode = process.exitValue();
+
+            System.out.println("==== " + toolName + " OUTPUT ====");
+            System.out.println(output);
+
+            System.out.println(toolName + " finished with exit code " + exitCode);
             return output.toString();
+
         } catch (Exception e) {
             e.printStackTrace();
-            throw new RuntimeException("ESLINT execution failed: " + e.getMessage(), e);
+            throw new RuntimeException(toolName + " execution failed: " + e.getMessage(), e);
+        }
+    }
+
+    private void streamLogs(Process process) throws IOException {
+
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(process.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println(line);
+            }
         }
     }
 }
